@@ -4,10 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Genius Hacker · Premium Inspector</title>
-  <!-- Fonts & Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <!-- Tailwind + custom config -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -163,9 +161,9 @@
   </div>
 
   <script>
-    // ------------------------------------------------------------------
-    // STATE & CLIENT-SIDE CLONE ENGINE (pure front‑end, no PHP)
-    // ------------------------------------------------------------------
+    // ================================================================
+    // STATE
+    // ================================================================
     let appState = { rawHtml: '', url: '', networkLogs: [], extractedApis: [] };
 
     function toggleSidebar() {
@@ -190,79 +188,121 @@
       if (window.innerWidth < 768) toggleSidebar();
     }
 
-    // ---------- CORS-AGNOSTIC CLONE (works in browser) ----------
+    // ================================================================
+    // CLONE ENGINE (CORS-proxy based, client-side)
+    // ================================================================
     async function startCloningProcess() {
       const urlInput = document.getElementById('targetUrl').value.trim();
       const statusBanner = document.getElementById('statusBanner');
       if (!urlInput) return alert('Please enter a URL!');
 
+      // basic URL validation / normalization
+      let targetUrl = urlInput;
+      if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
+      try { new URL(targetUrl); } catch (e) { return alert('Invalid URL!'); }
+
       statusBanner.classList.remove('hidden');
-      document.getElementById('statusText').innerText = 'Fetching website data (CORS proxy)...';
+      document.getElementById('statusText').innerText = 'Fetching website data via CORS proxy...';
       document.getElementById('statusIcon').className = 'fa-solid fa-circle-notch fa-spin text-premium-accent';
 
       try {
-        // Use a public CORS proxy to bypass cross-origin restrictions
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(urlInput)}`;
-        const response = await fetch(proxyUrl);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const rawHtml = await response.text();
+        // Try multiple public CORS proxies (fallback chain)
+        const proxies = [
+          `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
+          `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+          `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`
+        ];
 
-        if (!rawHtml || rawHtml.length < 10) throw new Error('Empty response');
+        let rawHtml = '';
+        let lastError = '';
+        for (const proxyUrl of proxies) {
+          try {
+            const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const txt = await response.text();
+            if (txt && txt.length > 50) { rawHtml = txt; break; }
+          } catch (e) { lastError = e.message; }
+        }
 
-        // ---- extract assets (styles / scripts / APIs) ----
-        const urlParts = new URL(urlInput);
-        const baseUrl = urlParts.origin;
+        if (!rawHtml) throw new Error('All proxies failed. ' + lastError);
 
-        // stylesheets
-        const cssMatches = [...rawHtml.matchAll(/<link[^>]+href=["']([^"']+)["']/gi)];
+        // ---- Extract assets & APIs ----
+        const urlObj = new URL(targetUrl);
+        const baseUrl = urlObj.origin;
+
         const networkLogs = [];
-        cssMatches.forEach(m => {
-          const href = m[1];
-          const full = href.startsWith('http') ? href : baseUrl + (href.startsWith('/') ? href : '/' + href);
-          networkLogs.push({ type: 'Stylesheet', method: 'GET', url: full });
-        });
 
-        // scripts
-        const jsMatches = [...rawHtml.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)];
-        jsMatches.forEach(m => {
+        // Stylesheets
+        const cssRegex = /<link[^>]+href=["']([^"']+)["'][^>]*>/gi;
+        let m;
+        while ((m = cssRegex.exec(rawHtml)) !== null) {
+          const href = m[1];
+          if (/\.css(\?|$)/i.test(href) || /stylesheet/i.test(m[0])) {
+            const full = href.startsWith('http') ? href : baseUrl + (href.startsWith('/') ? href : '/' + href);
+            networkLogs.push({ type: 'Stylesheet', method: 'GET', url: full });
+          }
+        }
+
+        // Scripts
+        const jsRegex = /<script[^>]+src=["']([^"']+)["']/gi;
+        while ((m = jsRegex.exec(rawHtml)) !== null) {
           const src = m[1];
           const full = src.startsWith('http') ? src : baseUrl + (src.startsWith('/') ? src : '/' + src);
           networkLogs.push({ type: 'Script', method: 'GET', url: full });
-        });
+        }
 
-        // API endpoints
-        const apiMatches1 = [...rawHtml.matchAll(/(?:fetch|axios\.get|axios\.post|\$\.ajax|XMLHttpRequest)\s*\(\s*["'`]([^"'`]+)["'`]/gi)];
-        const apiMatches2 = [...rawHtml.matchAll(/["'`]((?:https?:\/\/[^"'`]+)?\/(?:api|v[0-9]+|graphql|rest|v1)[^"'`]*)["'`]/gi)];
-        const combinedApis = new Set();
-        [...apiMatches1, ...apiMatches2].forEach(match => {
-          const api = match[1];
-          if (api && !/\.(css|js|png|jpg|jpeg|svg|gif|woff|ttf)$/i.test(api)) {
-            combinedApis.add(api);
+        // API endpoints (fetch / axios / XHR patterns)
+        const apiPatterns = [
+          /(?:fetch|axios\.get|axios\.post|\$\.ajax|XMLHttpRequest)\s*\(\s*["'`]([^"'`]+)["'`]/gi,
+          /["'`]((?:https?:\/\/[^"'`]+)?\/(?:api|v[0-9]+|graphql|rest|v1)[^"'`]*)["'`]/gi
+        ];
+        const apiSet = new Set();
+        apiPatterns.forEach(re => {
+          let match;
+          while ((match = re.exec(rawHtml)) !== null) {
+            const api = match[1];
+            if (api && !/\.(css|js|png|jpg|jpeg|svg|gif|woff|ttf|ico)(\?|$)/i.test(api)) {
+              apiSet.add(api);
+            }
           }
         });
 
         const extractedApis = [];
-        combinedApis.forEach(api => {
+        apiSet.forEach(api => {
           const full = api.startsWith('http') ? api : baseUrl + (api.startsWith('/') ? api : '/' + api);
           const item = { type: 'Fetch/XHR', method: 'API', url: full };
           networkLogs.push(item);
           extractedApis.push(item);
         });
 
-        // ---- update state ----
+        // ---- Update state ----
         appState.rawHtml = rawHtml;
-        appState.url = urlInput;
+        appState.url = targetUrl;
         appState.networkLogs = networkLogs;
         appState.extractedApis = extractedApis;
 
-        // ---- feed into UI ----
-        document.getElementById('clonedIframe').srcdoc = rawHtml;
+        // ---- Feed UI ----
+        // Add <base> tag so relative resources resolve correctly in the iframe
+        const baseTag = `<base href="${baseUrl}/">`;
+        let displayHtml = rawHtml;
+        if (!/<base\s/i.test(displayHtml)) {
+          displayHtml = displayHtml.replace(/<head[^>]*>/i, (head) => head + baseTag);
+          if (!/<base\s/i.test(displayHtml)) {
+            displayHtml = baseTag + displayHtml; // fallback for malformed HTML
+          }
+        }
+
+        document.getElementById('clonedIframe').srcdoc = displayHtml;
         document.getElementById('codeDisplay').value = rawHtml;
+
         renderLogs();
         renderExtractedApis();
 
-        statusBanner.classList.add('hidden');
+        document.getElementById('statusText').innerText = 'Cloned Successfully!';
+        document.getElementById('statusIcon').className = 'fa-solid fa-check-circle text-emerald-400';
+        setTimeout(() => statusBanner.classList.add('hidden'), 2500);
         switchTab('preview');
+
       } catch (err) {
         document.getElementById('statusText').innerText = `Error: ${err.message || 'Failed to load'}`;
         document.getElementById('statusIcon').className = 'fa-solid fa-triangle-exclamation text-red-500';
@@ -270,7 +310,9 @@
       }
     }
 
-    // ---------- COPY & UI HELPERS ----------
+    // ================================================================
+    // UI HELPERS
+    // ================================================================
     function copyCode() {
       const codeText = document.getElementById('codeDisplay').value;
       if (!codeText) return alert('No code to copy!');
@@ -294,10 +336,10 @@
       }
       container.innerHTML = appState.extractedApis.map(api => `
         <div class="p-4 bg-premium-card border border-premium-border rounded-xl flex items-center justify-between hover:border-premium-accent transition-colors">
-          <span class="text-sm font-mono text-premium-text truncate max-w-[80%]">${api.url}</span>
+          <span class="text-sm font-mono text-premium-text truncate max-w-[80%]">${escapeHtml(api.url)}</span>
           <div class="flex items-center gap-2">
             <span class="bg-premium-border text-xs px-2 py-1 rounded text-premium-muted">${api.method}</span>
-            <button onclick="copyApi('${api.url.replace(/'/g, "\\'")}')" class="bg-premium-dark hover:bg-premium-border text-white text-xs px-2 py-1 rounded border border-premium-border transition-colors" title="Copy API">
+            <button onclick="copyApi('${escapeJs(api.url)}')" class="bg-premium-dark hover:bg-premium-border text-white text-xs px-2 py-1 rounded border border-premium-border transition-colors" title="Copy API">
               <i class="fa-regular fa-copy"></i>
             </button>
           </div>
@@ -313,7 +355,7 @@
       }
       list.innerHTML = appState.networkLogs.map(log => `
         <div class="flex items-center justify-between px-3 py-2 bg-premium-dark hover:bg-premium-border/50 rounded-lg border border-transparent transition-colors">
-          <span class="text-xs font-mono text-premium-muted truncate max-w-[80%]">${log.url}</span>
+          <span class="text-xs font-mono text-premium-muted truncate max-w-[80%]">${escapeHtml(log.url)}</span>
           <span class="text-[10px] font-bold text-premium-accent ml-2">${log.method}</span>
         </div>
       `).join('');
@@ -337,20 +379,45 @@
       let input = document.getElementById('decryptInput').value.trim();
       if (!input) return alert('Paste code first!');
       let current = input;
+
+      // try base64
       try { current = atob(current.replace(/\s+/g, '')); } catch (e) {}
+
+      // try HTML entity decode
       try {
         let txt = document.createElement('textarea');
         txt.innerHTML = current;
         current = txt.value;
       } catch (e) {}
+
+      // try URL decode
+      try { current = decodeURIComponent(current); } catch (e) {}
+
+      // try hex decode (if looks like hex)
+      if (/^[0-9a-fA-F\s]+$/.test(current) && current.replace(/\s/g, '').length % 2 === 0) {
+        try {
+          const hex = current.replace(/\s/g, '');
+          let str = '';
+          for (let i = 0; i < hex.length; i += 2) {
+            str += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+          }
+          if (/[\x20-\x7E]{4,}/.test(str)) current = str;
+        } catch (e) {}
+      }
+
       document.getElementById('decryptOutput').value = current;
     }
 
-    // set initial sidebar state for mobile
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function escapeJs(s) {
+      return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    }
+
+    // Initial sidebar state for mobile
     if (window.innerWidth < 768) {
       document.getElementById('sidebar').classList.add('-translate-x-full');
-    } else {
-      document.getElementById('sidebar').classList.remove('-translate-x-full');
     }
   </script>
 </body>
