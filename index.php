@@ -1,0 +1,332 @@
+
+<?php
+/**
+ * ==============================================================================
+ * GENIUS HACKER - Premium Web Inspector & Developer Tool
+ * Developed By: Genius Hacker Team
+ * Owner: Aditya
+ * ==============================================================================
+ */
+
+error_reporting(0);
+ini_set('display_errors', 0);
+
+if (isset($_GET['action'])) {
+    header('Content-Type: application/json');
+    $action = $_GET['action'];
+
+    // 1. CLONE WEBSITE ENGINE
+    if ($action === 'clone') {
+        $targetUrl = filter_var($_GET['url'] ?? '', FILTER_VALIDATE_URL);
+        if (!$targetUrl) { echo json_encode(['status' => 'error', 'message' => 'Please enter a valid URL']); exit; }
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $targetUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 8);
+        curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0');
+        
+        $rawHtml = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($httpCode !== 200 || !$rawHtml) { echo json_encode(['status' => 'error', 'message' => "Failed to load site! Code: {$httpCode}"]); exit; }
+
+        $urlParts = parse_url($targetUrl);
+        $baseUrl = $urlParts['scheme'] . '://' . $urlParts['host'];
+        $networkLogs = []; $extractedApis = [];
+        
+        preg_match_all('/<link[^>]+href=["\']([^"\']+)["\']/i', $rawHtml, $cssMatches);
+        foreach ($cssMatches[1] as $href) {
+            $fullUrl = (strpos($href, 'http') === 0) ? $href : rtrim($baseUrl, '/') . '/' . ltrim($href, '/');
+            $networkLogs[] = ['type' => 'Stylesheet', 'method' => 'GET', 'url' => $fullUrl];
+        }
+
+        preg_match_all('/<script[^>]+src=["\']([^"\']+)["\']/i', $rawHtml, $jsMatches);
+        foreach ($jsMatches[1] as $src) {
+            $fullUrl = (strpos($src, 'http') === 0) ? $src : rtrim($baseUrl, '/') . '/' . ltrim($src, '/');
+            $networkLogs[] = ['type' => 'Script', 'method' => 'GET', 'url' => $fullUrl];
+        }
+
+        preg_match_all('/(?:fetch|axios\.get|axios\.post|\$\.ajax|XMLHttpRequest)\s*\(\s*[\'"`]([^\'"`]+)[\'"`]/i', $rawHtml, $apiMatches1);
+        preg_match_all('/[\'"`]((?:https?:\/\/[^\'"`]+)?\/(?:api|v[0-9]+|graphql|rest|v1)[^\'"`]*)[\'"`]/i', $rawHtml, $apiMatches2);
+        
+        $combinedApis = array_unique(array_merge($apiMatches1[1] ?? [], $apiMatches2[1] ?? []));
+        foreach ($combinedApis as $api) {
+            if (preg_match('/\.(css|js|png|jpg|jpeg|svg|gif|woff|ttf)$/i', $api)) continue;
+            $fullUrl = (strpos($api, 'http') === 0) ? $api : rtrim($baseUrl, '/') . '/' . ltrim($api, '/');
+            $item = ['type' => 'Fetch/XHR', 'method' => 'API', 'url' => $fullUrl];
+            $networkLogs[] = $item; $extractedApis[] = $item;
+        }
+
+        echo json_encode(['status' => 'success', 'url' => $targetUrl, 'raw_html' => $rawHtml, 'processed_html' => $rawHtml, 'network_logs' => $networkLogs, 'extracted_apis' => array_values($extractedApis)]);
+        exit;
+    }
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Genius Hacker - Premium Inspector</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        premium: { dark: '#0f172a', card: '#1e293b', border: '#334155', accent: '#3b82f6', text: '#f8fafc', muted: '#94a3b8' }
+                    },
+                    fontFamily: { sans: ['Inter', 'sans-serif'], mono: ['Consolas', 'monospace'] }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+        .sidebar { transition: transform 0.3s ease-in-out; }
+        .sidebar.open { transform: translateX(0); }
+    </style>
+</head>
+<body class="h-screen flex overflow-hidden bg-premium-dark">
+
+    <!-- SIDEBAR -->
+    <aside id="sidebar" class="sidebar fixed inset-y-0 left-0 z-50 w-64 bg-premium-card border-r border-premium-border transform -translate-x-full md:translate-x-0 md:static flex flex-col shadow-2xl">
+        <div class="h-16 flex items-center px-6 border-b border-premium-border">
+            <div class="w-8 h-8 rounded-lg bg-premium-accent flex items-center justify-center text-white font-bold text-lg mr-3 shadow-lg">G</div>
+            <div>
+                <h1 class="font-bold text-base leading-tight">GENIUS HACKER</h1>
+                <p class="text-[10px] text-premium-muted">Owner: Aditya</p>
+            </div>
+        </div>
+
+        <nav class="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
+            <p class="px-2 text-xs font-bold text-premium-muted uppercase tracking-wider mb-3">Main Tools</p>
+            <button onclick="switchTab('preview')" id="btn-tab-preview" class="w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium bg-premium-border text-white transition-all"><i class="fa-solid fa-eye w-6 text-premium-accent"></i> Live Preview</button>
+            <button onclick="switchTab('code')" id="btn-tab-code" class="w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium text-premium-muted hover:bg-premium-border hover:text-white transition-all"><i class="fa-solid fa-code w-6"></i> Source Code</button>
+            <button onclick="switchTab('api')" id="btn-tab-api" class="w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium text-premium-muted hover:bg-premium-border hover:text-white transition-all"><i class="fa-solid fa-network-wired w-6"></i> Extracted APIs <span id="apiTabCount" class="ml-auto bg-premium-accent text-white text-[10px] px-2 py-0.5 rounded-full">0</span></button>
+            
+            <p class="px-2 text-xs font-bold text-premium-muted uppercase tracking-wider mt-6 mb-3">Utilities</p>
+            <button onclick="switchTab('decryptor')" id="btn-tab-decryptor" class="w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium text-premium-muted hover:bg-premium-border hover:text-white transition-all"><i class="fa-solid fa-key w-6 text-amber-400"></i> Decryptor</button>
+            <button onclick="downloadCode()" class="w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium text-premium-muted hover:bg-premium-border hover:text-white transition-all"><i class="fa-solid fa-download w-6 text-purple-400"></i> Download Code</button>
+        </nav>
+
+        <div class="p-4 border-t border-premium-border text-center">
+            <p class="text-[11px] text-premium-muted">Developed by Aditya</p>
+        </div>
+    </aside>
+
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/60 z-40 hidden md:hidden" onclick="toggleSidebar()"></div>
+
+    <!-- MAIN CONTENT -->
+    <div class="flex-1 flex flex-col h-full overflow-hidden relative">
+        
+        <header class="h-16 bg-premium-card border-b border-premium-border flex items-center justify-between px-4 shrink-0">
+            <div class="flex items-center">
+                <button onclick="toggleSidebar()" class="md:hidden text-premium-muted hover:text-white mr-4"><i class="fa-solid fa-bars text-xl"></i></button>
+                <div class="flex items-center bg-premium-dark border border-premium-border rounded-lg px-3 py-1.5 w-full md:w-96">
+                    <i class="fa-solid fa-link text-premium-muted mr-2 text-sm"></i>
+                    <input type="url" id="targetUrl" placeholder="Enter website URL..." class="bg-transparent text-white text-sm w-full focus:outline-none font-mono">
+                </div>
+            </div>
+            <button onclick="startCloningProcess()" class="bg-premium-accent hover:bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-lg flex items-center transition-all"><i class="fa-solid fa-bolt mr-2"></i> Clone</button>
+        </header>
+
+        <div id="statusBanner" class="hidden absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-premium-card border border-premium-border text-white text-sm px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3">
+            <i id="statusIcon" class="fa-solid fa-circle-notch fa-spin text-premium-accent"></i>
+            <span id="statusText" class="font-medium">Cloning...</span>
+        </div>
+
+        <main class="flex-1 bg-premium-dark relative overflow-hidden">
+            
+            <!-- PREVIEW -->
+            <div id="view-preview" class="w-full h-full bg-white relative">
+                <iframe id="clonedIframe" class="w-full h-full border-none"></iframe>
+            </div>
+
+            <!-- CODE VIEW WITH COPY BUTTON -->
+            <div id="view-code" class="w-full h-full hidden flex flex-col p-4">
+                <div class="flex justify-between items-center mb-3">
+                    <h2 class="text-sm font-bold text-premium-muted uppercase tracking-wider">HTML Source Code</h2>
+                    <!-- NEW COPY BUTTON -->
+                    <button onclick="copyCode()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-lg flex items-center transition-all">
+                        <i class="fa-regular fa-copy mr-2"></i> Copy Code
+                    </button>
+                </div>
+                <textarea id="codeDisplay" readonly class="w-full h-full bg-[#0d1117] text-[#c9d1d9] font-mono text-sm p-4 rounded-xl border border-premium-border resize-none leading-relaxed"></textarea>
+            </div>
+
+            <!-- API VIEW WITH COPY BUTTONS -->
+            <div id="view-api" class="w-full h-full hidden flex flex-col p-4 overflow-y-auto">
+                <h2 class="text-sm font-bold text-premium-muted uppercase tracking-wider mb-4">Extracted API Endpoints</h2>
+                <div id="apiListContainer" class="space-y-3">
+                    <div class="p-8 text-center text-premium-muted bg-premium-card border border-premium-border rounded-xl">No APIs detected.</div>
+                </div>
+            </div>
+
+            <!-- DECRYPTOR -->
+            <div id="view-decryptor" class="w-full h-full hidden flex flex-col p-4">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1">
+                    <div class="flex flex-col">
+                        <label class="text-xs font-bold text-premium-muted mb-2">Encrypted Input</label>
+                        <textarea id="decryptInput" class="w-full flex-1 bg-premium-card text-amber-200 font-mono text-sm p-4 rounded-xl border border-premium-border resize-none"></textarea>
+                    </div>
+                    <div class="flex flex-col">
+                        <label class="text-xs font-bold text-premium-muted mb-2">Decrypted Output</label>
+                        <textarea id="decryptOutput" readonly class="w-full flex-1 bg-premium-card text-emerald-400 font-mono text-sm p-4 rounded-xl border border-premium-border resize-none"></textarea>
+                    </div>
+                </div>
+                <button onclick="runAutoMultiDecrypt()" class="mt-4 w-full bg-premium-accent hover:bg-blue-600 text-white font-medium py-3 rounded-xl transition-all">Decrypt Data</button>
+            </div>
+        </main>
+
+        <footer class="h-48 bg-premium-card border-t border-premium-border flex flex-col shrink-0">
+            <div class="px-4 py-2 border-b border-premium-border flex items-center justify-between bg-premium-dark">
+                <span class="text-xs font-bold text-premium-muted uppercase tracking-wider flex items-center"><i class="fa-solid fa-terminal mr-2"></i> Network Inspector</span>
+                <button onclick="clearLogs()" class="text-xs text-red-400 hover:text-red-300"><i class="fa-solid fa-trash mr-1"></i> Clear</button>
+            </div>
+            <div id="logList" class="flex-1 overflow-y-auto p-2 space-y-1"><div class="text-center text-xs text-premium-muted py-4">No logs captured yet.</div></div>
+        </footer>
+    </div>
+
+    <script>
+        let appState = { rawHtml: '', url: '', networkLogs: [], extractedApis: [] };
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            sidebar.classList.toggle('-translate-x-full');
+            sidebar.classList.toggle('translate-x-0');
+            overlay.classList.toggle('hidden');
+        }
+
+        function switchTab(tab) {
+            ['preview', 'code', 'api', 'decryptor'].forEach(t => {
+                document.getElementById('view-' + t).classList.add('hidden');
+                const btn = document.getElementById('btn-tab-' + t);
+                btn.classList.remove('bg-premium-border', 'text-white');
+                btn.classList.add('text-premium-muted');
+            });
+            document.getElementById('view-' + tab).classList.remove('hidden');
+            const activeBtn = document.getElementById('btn-tab-' + tab);
+            activeBtn.classList.remove('text-premium-muted');
+            activeBtn.classList.add('bg-premium-border', 'text-white');
+            if (window.innerWidth < 768) toggleSidebar();
+        }
+
+        async function startCloningProcess() {
+            const urlInput = document.getElementById('targetUrl').value.trim();
+            const statusBanner = document.getElementById('statusBanner');
+            if (!urlInput) return alert('Please enter a URL!');
+            
+            statusBanner.classList.remove('hidden');
+            document.getElementById('statusText').innerText = 'Fetching website data...';
+
+            try {
+                const response = await fetch(`?action=clone&url=${encodeURIComponent(urlInput)}`);
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    appState.rawHtml = data.raw_html;
+                    appState.networkLogs = data.network_logs || [];
+                    appState.extractedApis = data.extracted_apis || [];
+                    
+                    document.getElementById('clonedIframe').srcdoc = data.processed_html;
+                    document.getElementById('codeDisplay').value = data.raw_html;
+                    
+                    renderLogs(); renderExtractedApis();
+                    
+                    document.getElementById('statusText').innerText = 'Cloned Successfully!';
+                    document.getElementById('statusIcon').className = 'fa-solid fa-check-circle text-emerald-400';
+                    setTimeout(() => statusBanner.classList.add('hidden'), 2500);
+                    switchTab('preview');
+                } else { throw new Error(data.message); }
+            } catch (err) {
+                document.getElementById('statusText').innerText = `Error: ${err.message}`;
+                document.getElementById('statusIcon').className = 'fa-solid fa-triangle-exclamation text-red-500';
+                setTimeout(() => statusBanner.classList.add('hidden'), 3000);
+            }
+        }
+
+        // NAYA FEATURE: Source Code Copy karne ka function
+        function copyCode() {
+            const codeText = document.getElementById('codeDisplay').value;
+            if (!codeText) return alert('No code to copy!');
+            navigator.clipboard.writeText(codeText).then(() => {
+                alert('Source Code Copied Successfully!');
+            }).catch(err => {
+                alert('Failed to copy: ' + err);
+            });
+        }
+
+        // NAYA FEATURE: API URL Copy karne ka function
+        function copyApi(apiUrl) {
+            navigator.clipboard.writeText(apiUrl).then(() => {
+                alert('API Copied: ' + apiUrl);
+            }).catch(err => {
+                alert('Failed to copy: ' + err);
+            });
+        }
+
+        function renderExtractedApis() {
+            const container = document.getElementById('apiListContainer');
+            document.getElementById('apiTabCount').innerText = appState.extractedApis.length;
+            if (appState.extractedApis.length === 0) { 
+                container.innerHTML = `<div class="p-8 text-center text-premium-muted bg-premium-card border border-premium-border rounded-xl">No APIs detected.</div>`; 
+                return; 
+            }
+            
+            container.innerHTML = appState.extractedApis.map(api => `
+                <div class="p-4 bg-premium-card border border-premium-border rounded-xl flex items-center justify-between hover:border-premium-accent transition-colors">
+                    <span class="text-sm font-mono text-premium-text truncate max-w-[80%]">${api.url}</span>
+                    <div class="flex items-center gap-2">
+                        <span class="bg-premium-border text-xs px-2 py-1 rounded text-premium-muted">${api.method}</span>
+                        <!-- NAYA COPY BUTTON API KE LIYE -->
+                        <button onclick="copyApi('${api.url}')" class="bg-premium-dark hover:bg-premium-border text-white text-xs px-2 py-1 rounded border border-premium-border transition-colors" title="Copy API">
+                            <i class="fa-regular fa-copy"></i>
+                        </button>
+                    </div>
+                </div>`).join('');
+        }
+
+        function renderLogs() {
+            const list = document.getElementById('logList');
+            if (appState.networkLogs.length === 0) { 
+                list.innerHTML = `<div class="text-center text-xs text-premium-muted py-4">No logs captured yet.</div>`; 
+                return; 
+            }
+            list.innerHTML = appState.networkLogs.map(log => `
+                <div class="flex items-center justify-between px-3 py-2 bg-premium-dark hover:bg-premium-border/50 rounded-lg border border-transparent transition-colors">
+                    <span class="text-xs font-mono text-premium-muted truncate max-w-[80%]">${log.url}</span>
+                    <span class="text-[10px] font-bold text-premium-accent ml-2">${log.method}</span>
+                </div>`).join('');
+        }
+
+        function clearLogs() { appState.networkLogs = []; renderLogs(); }
+
+        function downloadCode() {
+            if (!appState.rawHtml) { alert('Clone a website first!'); return; }
+            const blob = new Blob([appState.rawHtml], { type: 'text/html' });
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'cloned_page.html'; a.click();
+        }
+
+        function runAutoMultiDecrypt() {
+            let input = document.getElementById('decryptInput').value.trim();
+            if (!input) return alert('Paste code first!');
+            let current = input;
+            try { current = atob(current.replace(/\s+/g, '')); } catch(e) {}
+            try { let txt = document.createElement('textarea'); txt.innerHTML = current; current = txt.value; } catch(e) {}
+            document.getElementById('decryptOutput').value = current;
+        }
+    </script>
+</body>
+</html>
